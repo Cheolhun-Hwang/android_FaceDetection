@@ -16,6 +16,10 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -47,9 +51,6 @@ import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -58,11 +59,9 @@ import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-public class Camera2BasicFragment extends Fragment
-implements View.OnClickListener {
+public class Camera2BasicFragment extends Fragment{
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
     private static final int REQUEST_CAMERA_PERMISSION = 1;
-    private static final String FRAGMENT_DIALOG = "dialog";
 
     static {
         ORIENTATIONS.append(Surface.ROTATION_0, 90);
@@ -100,13 +99,15 @@ implements View.OnClickListener {
     private String mCameraId;
     private TextView notifyWH;
     private AutoFitTextureView mTextureView;
-    private OverlayView mOverlayView;
     private Matrix mFaceDetectionMatrix;
     private CameraManager mCameraManager;
     private CameraCharacteristics mCameraCharacteristics;
     private boolean mSwappedDimensions;
+    private CaptureRequest.Builder mPreviewRequestBuilder;
+    private CaptureRequest mPreviewRequest;
     private CameraCaptureSession mCaptureSession;
     private CameraDevice mCameraDevice;
+
     private Size mPreviewSize;
     private final CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
 
@@ -139,17 +140,6 @@ implements View.OnClickListener {
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
     private ImageReader mImageReader;
-    private File mFile;
-    private final ImageReader.OnImageAvailableListener mOnImageAvailableListener
-            = new ImageReader.OnImageAvailableListener() {
-
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            mBackgroundHandler.post(new ImageSaver(reader.acquireNextImage(), mFile));
-        }
-    };
-    private CaptureRequest.Builder mPreviewRequestBuilder;
-    private CaptureRequest mPreviewRequest;
     private int mState = STATE_PREVIEW;
     private Semaphore mCameraOpenCloseLock = new Semaphore(1);
     private boolean mFlashSupported;
@@ -160,6 +150,8 @@ implements View.OnClickListener {
         private void process(CaptureResult result) {
             Integer mode = result.get(CaptureResult.STATISTICS_FACE_DETECT_MODE);
             Face[] faces = result.get(CaptureResult.STATISTICS_FACES);
+            final float distance= (result.get(CaptureResult.LENS_FOCUS_DISTANCE) == null)?0f
+                    :result.get(CaptureResult.LENS_FOCUS_DISTANCE);
             if (faces != null && mode != null) {
                 if (faces.length > 0) {
                     for(int i = 0; i < faces.length; i++) {
@@ -169,31 +161,36 @@ implements View.OnClickListener {
                             int top = faces[i].getBounds().top;
                             int right = faces[i].getBounds().right;
                             int bottom = faces[i].getBounds().bottom;
-                            //float points[] = {(float)left, (float)top, (float)right, (float)bottom};
 
                             Rect uRect = new Rect(left, top, right, bottom);
                             RectF rectF = new RectF(uRect);
                             mFaceDetectionMatrix.mapRect(rectF);
-                            //mFaceDetectionMatrix.mapPoints(points);
                             rectF.round(uRect);
-                            //uRect.set((int) rectF.left, (int) rectF.top, (int) rectF.right, (int) rectF.bottom);
                             Log.i("Test", "Activity rect" + i + " bounds: " + uRect);
 
                             final Rect rect = uRect;
                             getActivity().runOnUiThread(new Runnable() {
                                 @Override
                                 public void run() {
-                                    mOverlayView.setRect(rect);
-                                    mOverlayView.requestLayout();
+//                                    mOverlayView.setRect(rect);
+//                                    mOverlayView.requestLayout();
                                 }
                             });
                             if(notifyWH == null){
                                 notifyWH = getView().findViewById(R.id.notify);
                             }
-
-                            notifyWH.setText("c x : " + rect.centerX() + " / c y : " +
-                                    rect.centerY() + " / (l,t) : (" + rect.left+"," + rect.top +
-                                    ") / (r.b) : (" + rect.right+","+rect.bottom+")");
+                            getActivity().runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    notifyWH.setText("c x : " + rect.centerX() + " / c y : " +
+                                            rect.centerY() + " / (l,t) : (" + rect.left+"," + rect.top +
+                                            ") / (r.b) : (" + rect.right+","+rect.bottom+")\n"+
+                                            "distance : "+ distance +
+                                            "\nx : "+ x + " / y : " + y + " / z : " + z +
+                                            "\nRoll : "+ roll + " / Pitch : " + pitch + " / Yaw : " + yaw
+                                    );
+                                }
+                            });
 
                             break;
                         }
@@ -209,7 +206,6 @@ implements View.OnClickListener {
                 case STATE_WAITING_LOCK: {
                     Integer afState = result.get(CaptureResult.CONTROL_AF_STATE);
                     if (afState == null) {
-                        captureStillPicture();
                     } else if (CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED == afState ||
                             CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED == afState) {
                         // CONTROL_AE_STATE can be null on some devices
@@ -217,7 +213,6 @@ implements View.OnClickListener {
                         if (aeState == null ||
                                 aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
                             mState = STATE_PICTURE_TAKEN;
-                            captureStillPicture();
                         } else {
                             runPrecaptureSequence();
                         }
@@ -239,7 +234,6 @@ implements View.OnClickListener {
                     Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
                     if (aeState == null || aeState != CaptureResult.CONTROL_AE_STATE_PRECAPTURE) {
                         mState = STATE_PICTURE_TAKEN;
-                        captureStillPicture();
                     }
                     break;
                 }
@@ -260,6 +254,27 @@ implements View.OnClickListener {
             process(result);
         }
     };
+
+    // Gyro
+    //Using the Accelometer & Gyroscoper
+    private SensorManager mSensorManager = null;
+
+    //Using the Gyroscope
+    private SensorEventListener mGyroLis;
+    private Sensor mGgyroSensor = null;
+
+    //Roll and Pitch
+    private double pitch, y;
+    private double roll, x;
+    private double yaw, z;
+
+    //timestamp and dt
+    private double timestamp;
+    private double dt;
+
+    // for radian -> dgree
+    private double RAD2DGR = 180 / Math.PI;
+    private static final float NS2S = 1.0f/1000000000.0f;
 
     private void showToast(final String text) {
         final Activity activity = getActivity();
@@ -318,16 +333,20 @@ implements View.OnClickListener {
 
     @Override
     public void onViewCreated(final View view, Bundle savedInstanceState) {
-        view.findViewById(R.id.picture).setOnClickListener(this);
-        view.findViewById(R.id.info).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
-        mOverlayView = (OverlayView) view.findViewById(R.id.overlay_view);
+
+        //Using the Gyroscope & Accelometer
+        mSensorManager = (SensorManager) getActivity().getSystemService(Context.SENSOR_SERVICE);
+
+        //Using the Accelometer
+        mGgyroSensor = mSensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        mGyroLis = new GyroscopeListener();
+
     }
 
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
-        mFile = new File(getActivity().getExternalFilesDir(null), "pic.jpg");
     }
 
     @Override
@@ -335,22 +354,30 @@ implements View.OnClickListener {
         super.onResume();
         startBackgroundThread();
 
-        // When the screen is turned off and turned back on, the SurfaceTexture is already
-        // available, and "onSurfaceTextureAvailable" will not be called. In that case, we can open
-        // a camera and start preview from here (otherwise, we wait until the surface is ready in
-        // the SurfaceTextureListener).
         if (mTextureView.isAvailable()) {
             openCamera(mTextureView.getWidth(), mTextureView.getHeight());
         } else {
             mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
         }
+
+        mSensorManager.registerListener(mGyroLis, mGgyroSensor, SensorManager.SENSOR_DELAY_UI);
     }
 
     @Override
     public void onPause() {
         closeCamera();
         stopBackgroundThread();
+
+        mSensorManager.unregisterListener(mGyroLis);
+
         super.onPause();
+    }
+
+    @Override
+    public void onDestroy() {
+        mSensorManager.unregisterListener(mGyroLis);
+
+        super.onDestroy();
     }
 
     @Override
@@ -358,8 +385,7 @@ implements View.OnClickListener {
                                            @NonNull int[] grantResults) {
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
             if (grantResults.length != 1 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-                ErrorDialog.newInstance(getString(R.string.request_permission))
-                        .show(getChildFragmentManager(), FRAGMENT_DIALOG);
+                showToast(getString(R.string.request_permission));
             }
         } else {
             super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -370,15 +396,6 @@ implements View.OnClickListener {
         Activity activity = getActivity();
         mCameraManager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         try {
-           /* for(final String cameraId : manager.getCameraIdList()){
-                CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-                int cOrientation = characteristics.get(CameraCharacteristics.LENS_FACING);
-                if(cOrientation == CameraCharacteristics.LENS_FACING_FRONT)
-                {
-                    System.out.println("cam id f"+cameraId);
-                }
-                System.out.println("cam id "+cameraId);
-            }*/
             for (String cameraId : mCameraManager.getCameraIdList()) {
                 mCameraCharacteristics
                         = mCameraManager.getCameraCharacteristics(cameraId);
@@ -400,8 +417,6 @@ implements View.OnClickListener {
                             new CompareSizesByArea());
                     mImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
                             ImageFormat.JPEG, /*maxImages*/2);
-                    mImageReader.setOnImageAvailableListener(
-                            mOnImageAvailableListener, mBackgroundHandler);
 
                     // Find out if we need to swap dimension to get the preview size relative to sensor
                     // coordinate.
@@ -501,10 +516,7 @@ implements View.OnClickListener {
         } catch (CameraAccessException e) {
             e.printStackTrace();
         } catch (NullPointerException e) {
-            // Currently an NPE is thrown when the Camera2API is used but not supported on the
-            // device this code runs.
-            ErrorDialog.newInstance(getString(R.string.camera_error))
-                    .show(getChildFragmentManager(), FRAGMENT_DIALOG);
+            showToast(getString(R.string.camera_error));
         }
     }
 
@@ -604,6 +616,9 @@ implements View.OnClickListener {
                                 // Flash is automatically enabled when necessary.
                                 setAutoFlash(mPreviewRequestBuilder);
 
+                                mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE,
+                                        mPreviewRequestBuilder.get(CaptureRequest.LENS_FOCUS_DISTANCE));
+
                                 // Finally, we start displaying the camera preview.
                                 mPreviewRequest = mPreviewRequestBuilder.build();
                                 mCaptureSession.setRepeatingRequest(mPreviewRequest,
@@ -647,33 +662,12 @@ implements View.OnClickListener {
         } else if (Surface.ROTATION_180 == rotation) {
             matrix.postRotate(180, centerX, centerY);
         }
-        mTextureView.setTransform(matrix);
-    }
-
-    private void takePicture() {
-        lockFocus();
-    }
-
-    private void lockFocus() {
-        try {
-            // This is how to tell the camera to lock focus.
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_START);
-            // Tell #mCaptureCallback to wait for the lock.
-            mState = STATE_WAITING_LOCK;
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
     }
 
     private void runPrecaptureSequence() {
         try {
-            // This is how to tell the camera to trigger.
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                     CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START);
-            // Tell #mCaptureCallback to wait for the precapture sequence to be set.
             mState = STATE_WAITING_PRECAPTURE;
             mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
                     mBackgroundHandler);
@@ -682,127 +676,10 @@ implements View.OnClickListener {
         }
     }
 
-    private void captureStillPicture() {
-        try {
-            final Activity activity = getActivity();
-            if (null == activity || null == mCameraDevice) {
-                return;
-            }
-            // This is the CaptureRequest.Builder that we use to take a picture.
-            final CaptureRequest.Builder captureBuilder =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(mImageReader.getSurface());
-
-            // Use the same AE and AF modes as the preview.
-            captureBuilder.set(CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            setAutoFlash(captureBuilder);
-
-            // Orientation
-            int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(rotation));
-
-            CameraCaptureSession.CaptureCallback CaptureCallback
-                    = new CameraCaptureSession.CaptureCallback() {
-
-                @Override
-                public void onCaptureCompleted(@NonNull CameraCaptureSession session,
-                                               @NonNull CaptureRequest request,
-                                               @NonNull TotalCaptureResult result) {
-                    showToast("Saved: " + mFile);
-                    Log.d(TAG, mFile.toString());
-                    unlockFocus();
-                }
-            };
-
-            mCaptureSession.stopRepeating();
-            mCaptureSession.capture(captureBuilder.build(), CaptureCallback, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-    private int getOrientation(int rotation) {
-        // Sensor orientation is 90 for most devices, or 270 for some devices (eg. Nexus 5X)
-        // We have to take that into account and rotate JPEG properly.
-        // For devices with orientation of 90, we simply return our mapping from ORIENTATIONS.
-        // For devices with orientation of 270, we need to rotate the JPEG 180 degrees.
-        return (ORIENTATIONS.get(rotation) + mSensorOrientation + 270) % 360;
-    }
-
-    private void unlockFocus() {
-        try {
-            // Reset the auto-focus trigger
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-            setAutoFlash(mPreviewRequestBuilder);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    mBackgroundHandler);
-            // After this, the camera will go back to the normal state of preview.
-            mState = STATE_PREVIEW;
-            mCaptureSession.setRepeatingRequest(mPreviewRequest, mCaptureCallback,
-                    mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-
-    @Override
-    public void onClick(View v) {
-        switch (v.getId()) {
-            case R.id.picture: {
-                takePicture();
-                break;
-            }
-            case R.id.info: {
-                Activity activity = getActivity();
-                if (null != activity) {
-                    new AlertDialog.Builder(activity)
-                            .setMessage("Intro message!!.")
-                            .setPositiveButton(android.R.string.ok, null)
-                            .show();
-                }
-                break;
-            }
-        }
-    }
-
     private void setAutoFlash(CaptureRequest.Builder requestBuilder) {
         if (mFlashSupported) {
             requestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
                     CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
-        }
-    }
-
-    private static class ImageSaver implements Runnable {
-        private final Image mImage;
-        private final File mFile;
-
-        public ImageSaver(Image image, File file) {
-            mImage = image;
-            mFile = file;
-        }
-
-        @Override
-        public void run() {
-            ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buffer.remaining()];
-            buffer.get(bytes);
-            FileOutputStream output = null;
-            try {
-                output = new FileOutputStream(mFile);
-                output.write(bytes);
-            } catch (IOException e) {
-                e.printStackTrace();
-            } finally {
-                mImage.close();
-                if (null != output) {
-                    try {
-                        output.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
         }
     }
 
@@ -815,30 +692,41 @@ implements View.OnClickListener {
         }
     }
 
-    public static class ErrorDialog extends DialogFragment {
-
-        private static final String ARG_MESSAGE = "message";
-
-        public static ErrorDialog newInstance(String message) {
-            ErrorDialog dialog = new ErrorDialog();
-            Bundle args = new Bundle();
-            args.putString(ARG_MESSAGE, message);
-            dialog.setArguments(args);
-            return dialog;
-        }
+    private class GyroscopeListener implements SensorEventListener {
 
         @Override
-        public Dialog onCreateDialog(Bundle savedInstanceState) {
-            final Activity activity = getActivity();
-            return new AlertDialog.Builder(activity)
-                    .setMessage(getArguments().getString(ARG_MESSAGE))
-                    .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface dialogInterface, int i) {
-                            activity.finish();
-                        }
-                    })
-                    .create();
+        public void onSensorChanged(SensorEvent event) {
+            /* 각 축의 각속도 성분을 받는다. */
+            x = Math.round(event.values[0]*1000)/1000.0;
+            y = Math.round(event.values[1]*1000)/1000.0;
+            z = Math.round(event.values[2]*1000)/1000.0;
+            /* 각속도를 적분하여 회전각을 추출하기 위해 적분 간격(dt)을 구한다.
+             * dt : 센서가 현재 상태를 감지하는 시간 간격
+             * NS2S : nano second -> second */
+            dt = (event.timestamp - timestamp) * NS2S;
+            timestamp = event.timestamp;
+            /* 맨 센서 인식을 활성화 하여 처음 timestamp가 0일때는 dt값이 올바르지 않으므로 넘어간다. */
+            if (dt - timestamp*NS2S != 0) {
+                /* 각속도 성분을 적분 -> 회전각(pitch, roll)으로 변환.
+                 * 여기까지의 pitch, roll의 단위는 '라디안'이다.
+                 * SO 아래 로그 출력부분에서 멤버변수 'RAD2DGR'를 곱해주어 degree로 변환해줌.  */
+
+                pitch = Math.round((pitch + y*dt)*1000)/1000.0;
+                roll = Math.round((roll + x*dt)*1000)/1000.0;
+                yaw = Math.round((yaw + z*dt)*1000)/1000.0;
+                Log.e("LOG", "GYROSCOPE           [X]:" + String.format("%.4f", event.values[0])
+                        + "           [Y]:" + String.format("%.4f", event.values[1])
+                        + "           [Z]:" + String.format("%.4f", event.values[2])
+                        + "           [Pitch]: " + String.format("%.1f", pitch*RAD2DGR)
+                        + "           [Roll]: " + String.format("%.1f", roll*RAD2DGR)
+                        + "           [Yaw]: " + String.format("%.1f", yaw*RAD2DGR)
+                        + "           [dt]: " + String.format("%.4f", dt));
+
+            }
+        }
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+
         }
     }
 }
