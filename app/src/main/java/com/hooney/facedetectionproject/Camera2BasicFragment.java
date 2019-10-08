@@ -31,13 +31,13 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.Face;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
 import android.media.ImageReader;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Size;
+import android.util.SizeF;
 import android.util.SparseIntArray;
 import android.view.LayoutInflater;
 import android.view.Surface;
@@ -55,21 +55,22 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
+import static java.lang.Math.sqrt;
+
 public class Camera2BasicFragment extends Fragment{
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
     private static final int REQUEST_CAMERA_PERMISSION = 1;
-
     static {
         ORIENTATIONS.append(Surface.ROTATION_0, 90);
         ORIENTATIONS.append(Surface.ROTATION_90, 0);
         ORIENTATIONS.append(Surface.ROTATION_180, 270);
         ORIENTATIONS.append(Surface.ROTATION_270, 180);
     }
-
     private static final String TAG = "Camera2BasicFragment";
     private static final int STATE_PREVIEW = 0;
     private static final int STATE_WAITING_LOCK = 1;
@@ -107,8 +108,9 @@ public class Camera2BasicFragment extends Fragment{
     private CaptureRequest mPreviewRequest;
     private CameraCaptureSession mCaptureSession;
     private CameraDevice mCameraDevice;
-
     private Size mPreviewSize;
+    private long datetime;
+    private ArrayList<Float> dist_list;
     private final CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
 
         @Override
@@ -150,8 +152,18 @@ public class Camera2BasicFragment extends Fragment{
         private void process(CaptureResult result) {
             Integer mode = result.get(CaptureResult.STATISTICS_FACE_DETECT_MODE);
             Face[] faces = result.get(CaptureResult.STATISTICS_FACES);
-            final float distance= (result.get(CaptureResult.LENS_FOCUS_DISTANCE) == null)?0f
-                    :result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+
+            final float yourMinFocus = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            final float yourMaxFocus = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+            float[] maxFocus = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+            Size size = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+            final float size_w = size.getWidth();
+            final float size_h = size.getHeight();
+            float sensor_diag = (float)(Math.sqrt(size_h*size_h + size_w*size_w) * 0.026458333);
+
+//            final float distance= (result.get(CaptureResult.LENS_FOCUS_DISTANCE) == null)?0f
+//                    :result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+
             if (faces != null && mode != null) {
                 if (faces.length > 0) {
                     for(int i = 0; i < faces.length; i++) {
@@ -167,28 +179,50 @@ public class Camera2BasicFragment extends Fragment{
                             mFaceDetectionMatrix.mapRect(rectF);
                             rectF.round(uRect);
                             Log.i("Test", "Activity rect" + i + " bounds: " + uRect);
-
                             final Rect rect = uRect;
-                            getActivity().runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-//                                    mOverlayView.setRect(rect);
-//                                    mOverlayView.requestLayout();
-                                }
-                            });
                             if(notifyWH == null){
                                 notifyWH = getView().findViewById(R.id.notify);
                             }
+
+                            final float box_width = (rect.right-rect.left);
+                            final float box_height = (rect.bottom-rect.top);
+                            final float box_diag = (float)(Math.sqrt(box_height*box_height + box_width*box_width) * 0.026458333);
+                            final float object_dist = (maxFocus[0] / sensor_diag)*box_diag;
                             getActivity().runOnUiThread(new Runnable() {
                                 @Override
                                 public void run() {
-                                    notifyWH.setText("c x : " + rect.centerX() + " / c y : " +
-                                            rect.centerY() + " / (l,t) : (" + rect.left+"," + rect.top +
-                                            ") / (r.b) : (" + rect.right+","+rect.bottom+")\n"+
-                                            "distance : "+ distance +
-                                            "\nx : "+ x + " / y : " + y + " / z : " + z +
-                                            "\nRoll : "+ roll + " / Pitch : " + pitch + " / Yaw : " + yaw
-                                    );
+                                    String center_info = "c x : " + rect.centerX() + " / c y : " + rect.centerY()+"\n";
+                                    String box_info ="(box w/h px) : (" + box_width +"," + box_height +") / diag_cm : "+ box_diag+"\n";
+//                                    String dist_lens_info = "dist_lens : "+ distance +"\n";
+                                    String xyz_info = "x : "+ x + " / y : " + y + " / z : " + z + "\n";
+
+                                    if(datetime == 0){
+                                        datetime = new Date().getTime();
+                                        String dist_calc_info = "distance :" +object_dist+"\n";
+                                        notifyWH.setText(
+                                                center_info+box_info+dist_calc_info+xyz_info
+                                        );
+                                    }else{
+                                        long curTime = new Date().getTime();
+                                        long dif_sec = (curTime - datetime) / 1000;
+                                        if(dif_sec > 3){
+                                            datetime = new Date().getTime();
+
+                                            float sum = 0;
+                                            for (float num : dist_list){
+                                                sum += num;
+                                            }
+
+                                            float avg_object_dist = sum / dist_list.size();
+                                            dist_list.clear();
+                                            String dist_calc_info = "distance :" +avg_object_dist+"\n";
+                                            notifyWH.setText(
+                                                    center_info+box_info+dist_calc_info+xyz_info
+                                            );
+                                        }else{
+                                            dist_list.add(object_dist);
+                                        }
+                                    }
                                 }
                             });
 
@@ -328,6 +362,8 @@ public class Camera2BasicFragment extends Fragment{
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
+        datetime = 0;
+        dist_list = new ArrayList<>();
         return inflater.inflate(R.layout.fragment_camera2_basic, container, false);
     }
 
@@ -400,11 +436,8 @@ public class Camera2BasicFragment extends Fragment{
                 mCameraCharacteristics
                         = mCameraManager.getCameraCharacteristics(cameraId);
                 System.out.println("cam id " + cameraId);
-                // We don't use a front facing camera in this sample.
                 int facing = mCameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
                 if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
-
-
                     StreamConfigurationMap map = mCameraCharacteristics.get(
                             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                     if (map == null) {
@@ -499,10 +532,7 @@ public class Camera2BasicFragment extends Fragment{
                     Log.i("Test", "activeArraySizeRect2: " + mPreviewSize.getWidth() + ", " + mPreviewSize.getHeight());
                     float s1 = mPreviewSize.getWidth() / (float)activeArraySizeRect.width();
                     float s2 = mPreviewSize.getHeight() / (float)activeArraySizeRect.height();
-                    //float s1 = mOverlayView.getWidth();
-                    //float s2 = mOverlayView.getHeight();
-                    boolean mirror = true; // we always use front face camera
-                    boolean weAreinPortrait = true;
+                    boolean mirror = true;
                     mFaceDetectionMatrix.postScale(mirror ? -s1 : s1, s2);
                     if (mSwappedDimensions) {
                         mFaceDetectionMatrix.postTranslate(mPreviewSize.getHeight(), mPreviewSize.getWidth());
@@ -610,11 +640,23 @@ public class Camera2BasicFragment extends Fragment{
                             // When the session is ready, we start displaying the preview.
                             mCaptureSession = cameraCaptureSession;
                             try {
+//                                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
                                 // Auto focus should be continuous for camera preview.
                                 mPreviewRequestBuilder.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,
                                         CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL);
-                                // Flash is automatically enabled when necessary.
-                                setAutoFlash(mPreviewRequestBuilder);
+
+                                //MANUAL EXPOSURE
+                                mPreviewRequestBuilder.set(
+                                        CaptureRequest.CONTROL_AE_MODE,
+                                        CaptureRequest.CONTROL_AE_MODE_OFF
+                                );
+                                // AE MODE OFF에서만 사용이 가능하다. ns
+                                mPreviewRequestBuilder.set(
+                                        CaptureRequest.SENSOR_EXPOSURE_TIME, // 각 픽셀이 빛에 노출되는 시간을 설정
+                                        1000000000l / 50 /* 30일때 너무 밝음 */
+                                );
+
+
 
                                 mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE,
                                         mPreviewRequestBuilder.get(CaptureRequest.LENS_FOCUS_DISTANCE));
@@ -714,14 +756,13 @@ public class Camera2BasicFragment extends Fragment{
                 pitch = Math.round((pitch + y*dt)*1000)/1000.0;
                 roll = Math.round((roll + x*dt)*1000)/1000.0;
                 yaw = Math.round((yaw + z*dt)*1000)/1000.0;
-                Log.e("LOG", "GYROSCOPE           [X]:" + String.format("%.4f", event.values[0])
-                        + "           [Y]:" + String.format("%.4f", event.values[1])
-                        + "           [Z]:" + String.format("%.4f", event.values[2])
-                        + "           [Pitch]: " + String.format("%.1f", pitch*RAD2DGR)
-                        + "           [Roll]: " + String.format("%.1f", roll*RAD2DGR)
-                        + "           [Yaw]: " + String.format("%.1f", yaw*RAD2DGR)
-                        + "           [dt]: " + String.format("%.4f", dt));
-
+//                Log.e("LOG", "GYROSCOPE           [X]:" + String.format("%.4f", event.values[0])
+//                        + "           [Y]:" + String.format("%.4f", event.values[1])
+//                        + "           [Z]:" + String.format("%.4f", event.values[2])
+//                        + "           [Pitch]: " + String.format("%.1f", pitch*RAD2DGR)
+//                        + "           [Roll]: " + String.format("%.1f", roll*RAD2DGR)
+//                        + "           [Yaw]: " + String.format("%.1f", yaw*RAD2DGR)
+//                        + "           [dt]: " + String.format("%.4f", dt));
             }
         }
         @Override

@@ -19,10 +19,11 @@
         android:orientation="vertical"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
+
         <Button
             android:onClick="onClick"
-            android:id="@+id/face_detection"
-            android:text="Face Detection"
+            android:id="@+id/camera_api_2"
+            android:text="Camera API 2"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
     </LinearLayout>
