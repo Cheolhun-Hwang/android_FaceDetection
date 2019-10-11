@@ -36,6 +36,10 @@ public class MainActivity extends AppCompatActivity{
                 }else{
                     commitPermission(SIG_PERMISSION);
                 }
+                break;
+            case R.id.selector_layout:
+                intentSelectionLayout();
+                break;
             default:
                 return;
         }
@@ -43,6 +47,9 @@ public class MainActivity extends AppCompatActivity{
 
     private void intentCameraApi2() {
         startActivity(new Intent(getApplicationContext(), CameraActivity.class));
+    }
+    private void intentSelectionLayout() {
+        startActivity(new Intent(getApplicationContext(), SelectorActivity.class));
     }
     public boolean checkPermission(){
         boolean isAll = true;

@@ -26,6 +26,12 @@
             android:text="Camera API 2"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
+        <Button
+            android:onClick="onClick"
+            android:id="@+id/selector_layout"
+            android:text="Selector layout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
     </LinearLayout>
 
 </RelativeLayout>

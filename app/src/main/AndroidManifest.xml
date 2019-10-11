@@ -9,9 +9,10 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme.NoActionbar">
+        <activity android:name=".SelectorActivity"></activity>
         <activity
             android:name=".CameraActivity"
-            android:screenOrientation="portrait"></activity>
+            android:screenOrientation="portrait" />
         <activity android:name=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -21,14 +22,14 @@
         </activity>
     </application>
     <uses-feature
-        android:name="android.hardware.camera.autofocus"
+        android:name="android.hardware.camera2"
         android:required="true" />
     <uses-feature
-        android:name="android.hardware.camera2"
+        android:name="android.hardware.camera"
         android:required="true" />
 
     <uses-feature
-        android:name="android.hardware.camera"
+        android:name="android.hardware.camera.autofocus"
         android:required="true" />
 
     <uses-permission android:name="android.permission.CAMERA" />
