@@ -40,6 +40,9 @@ public class MainActivity extends AppCompatActivity{
             case R.id.selector_layout:
                 intentSelectionLayout();
                 break;
+            case R.id.tts_test_btn:
+                intentTTStest();
+                break;
             default:
                 return;
         }
@@ -50,6 +53,9 @@ public class MainActivity extends AppCompatActivity{
     }
     private void intentSelectionLayout() {
         startActivity(new Intent(getApplicationContext(), SelectorActivity.class));
+    }
+    private void intentTTStest() {
+        startActivity(new Intent(getApplicationContext(), TextSpeechActivity.class));
     }
     public boolean checkPermission(){
         boolean isAll = true;
